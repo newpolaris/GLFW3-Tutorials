@@ -48,13 +48,12 @@ int MainLoop();
 int MainLoopBAD();
 int MainLoopTHREADED();
 void ChildLoop(WindowHandle a_toWindow);
-void Render(WindowHandle a_toWindow);
+void Render(WindowHandle a_toWindow, bool isMain = true);
 int ShutDown();
 
 void GLFWErrorCallback(int a_iError, const char* a_szDiscription);
 void GLFWWindowSizeCallback(GLFWwindow* a_pWindow, int a_iWidth, int a_iHeight);
 void APIENTRY GLErrorCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, void* userParam);
-GLEWContext* glewGetContext();   // This needs to be defined for GLEW MX to work, along with the GLEW_MX define in the perprocessor!
 void CalcFPS(WindowHandle a_hWindowHandle);
 
 WindowHandle  CreateWindow(int a_iWidth, int a_iHeight, const std::string& a_szTitle, GLFWmonitor* a_pMonitor, WindowHandle a_hShare);
@@ -82,12 +81,12 @@ int main()
 	This loop will try to render from both threads simultaneously.
 	WARNING: RUN AT YOUR OWN RISK. I have had this loop crash on several occasions,
 	it is not stable and is only here as an example on how not to do it. */
-	//iReturnCode = MainLoopBAD();
+	iReturnCode = MainLoopBAD();
 
 	/* This loop is a working/stable example of how to render from multipul threads. 
 	Notice that this does NOT render from both threads at the same time. 
 	*/
-	iReturnCode = MainLoopTHREADED();
+	// iReturnCode = MainLoopTHREADED();
 
 
 	if (iReturnCode != EC_NO_ERROR)
@@ -336,12 +335,34 @@ int MainLoop()
 	return EC_NO_ERROR;
 }
 
+int se(WindowHandle a_toWindow)
+{
+	std::cout << "Entering main loop on thread ID: " << std::this_thread::get_id() << std::endl;
+
+	while (!ShouldClose())
+	{
+		// Keep Running!
+		// get delta time for this iteration:
+		float fDeltaTime = (float)glfwGetTime();
+
+		// render threaded.
+		Render(a_toWindow, false);
+
+		// calc FPS:
+		CalcFPS(a_toWindow);
+
+		// join second render thread
+	}
+    return 0;
+}
 
 int MainLoopBAD()
 {
 	std::cout << "Entering main loop on thread ID: " << std::this_thread::get_id() << std::endl;
 
 	MakeContextCurrent(g_hPrimaryWindow);
+
+    std::thread renderWindow2(&se, g_hSecondaryWindow);
 
 	while (!ShouldClose())
 	{
@@ -353,18 +374,18 @@ int MainLoopBAD()
 		g_ModelMatrix = glm::rotate(identity, fDeltaTime * 10.0f, glm::vec3(0.0f, 1.0f, 0.0f));
 
 		// render threaded.
-		std::thread renderWindow2(&Render, g_hSecondaryWindow);
 		Render(g_hPrimaryWindow);
 
 		// calc FPS:
-		CalcFPS(g_hSecondaryWindow);
 		CalcFPS(g_hPrimaryWindow);
 
 		// join second render thread
-		renderWindow2.join();
-
+g_RenderLock.lock();
 		glfwPollEvents(); // process events!
+g_RenderLock.unlock();
 	}
+
+    renderWindow2.join();
 
 	std::cout << "Exiting main loop on thread ID: " << std::this_thread::get_id() << std::endl;
 
@@ -435,11 +456,6 @@ void ChildLoop(WindowHandle a_toWindow)
 		}
 
 		// simulate work:
-		if (g_bDoWork)
-		{
-			std::chrono::milliseconds dura( 3 );
-			std::this_thread::sleep_for( dura );
-		}
 
 		g_RenderLock.lock();
 		glWaitSync(g_MainThreadFenceSync, 0, GL_TIMEOUT_IGNORED);		// tell the GPU to make sure that the second threads calls are in the pipline before adding ours!
@@ -454,9 +470,11 @@ void ChildLoop(WindowHandle a_toWindow)
 }
 
 
-void Render(WindowHandle a_toWindow)
+void Render(WindowHandle a_toWindow, bool isMain)
 {
+g_RenderLock.lock();
 	MakeContextCurrent(a_toWindow);
+g_RenderLock.unlock();
 		
 	// clear the backbuffer to our clear colour and clear the depth buffer
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -467,9 +485,15 @@ void Render(WindowHandle a_toWindow)
 	GLuint ViewID = glGetUniformLocation(g_Shader,"View");
 	GLuint ModelID = glGetUniformLocation(g_Shader,"Model");
 
+    int width, height;
+    glfwGetFramebufferSize(a_toWindow->m_pWindow, &width, &height);
+    glViewport(0, 0, width, height);
+    if (isMain)
+    {
 	glUniformMatrix4fv(ProjectionID, 1, false, glm::value_ptr(a_toWindow->m_m4Projection));
 	glUniformMatrix4fv(ViewID, 1, false, glm::value_ptr(a_toWindow->m_m4ViewMatrix));
 	glUniformMatrix4fv(ModelID, 1, false, glm::value_ptr(g_ModelMatrix));
+    }
 
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture( GL_TEXTURE_2D, g_Texture );
@@ -500,7 +524,6 @@ int ShutDown()
 	// cleanup any remaining windows:
 	for (auto& window :g_lWindows)
 	{
-		delete window->m_pGLEWContext;
 		glfwDestroyWindow(window->m_pWindow);
 
 		delete window;
@@ -513,21 +536,13 @@ int ShutDown()
 }
 
 
-GLEWContext* glewGetContext()
-{
-	//return g_hCurrentContext->m_pGLEWContext;
-	std::thread::id thread = std::this_thread::get_id();
-
-	return g_mCurrentContextMap[thread]->m_pGLEWContext;
-}
-
-
 void MakeContextCurrent(WindowHandle a_hWindowHandle)
 {
 	if (a_hWindowHandle != nullptr)
 	{
 		std::thread::id thread = std::this_thread::get_id();
 
+		glfwMakeContextCurrent(nullptr);
 		glfwMakeContextCurrent(a_hWindowHandle->m_pWindow);
 		g_mCurrentContextMap[thread] = a_hWindowHandle;
 	}
@@ -545,7 +560,6 @@ WindowHandle CreateWindow(int a_iWidth, int a_iHeight, const std::string& a_szTi
 	if (newWindow == nullptr)
 		return nullptr;
 
-	newWindow->m_pGLEWContext = nullptr;
 	newWindow->m_pWindow = nullptr;
 	newWindow->m_uiID = g_uiWindowCounter++;		// set ID and Increment Counter!
 	newWindow->m_uiWidth = a_iWidth;
@@ -576,15 +590,6 @@ WindowHandle CreateWindow(int a_iWidth, int a_iHeight, const std::string& a_szTi
 		return nullptr;
 	}
 
-	// create GLEW Context:
-	newWindow->m_pGLEWContext = new GLEWContext();
-	if (newWindow->m_pGLEWContext == nullptr)
-	{
-		printf("Error: Could not create GLEW Context!\n");
-		delete newWindow;
-		return nullptr;
-	}
-
 	glfwMakeContextCurrent(newWindow->m_pWindow);   // Must be done before init of GLEW for this new windows Context!
 	MakeContextCurrent(newWindow);					// and must be made current too :)
 	
@@ -610,7 +615,6 @@ WindowHandle CreateWindow(int a_iWidth, int a_iHeight, const std::string& a_szTi
             glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);                        // this allows us to set a break point in the callback function, no point to it if in release mode.
             #endif
             glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, GL_TRUE);        // tell openGl what errors we want (all).
-            glDebugMessageCallback(GLErrorCallback, NULL);                        // define the callback function.
     }
 
 	// add new window to the map and increment handle counter:
@@ -740,22 +744,5 @@ void APIENTRY GLErrorCallback(GLenum /* source */, GLenum type, GLuint id, GLenu
 
 void GLFWWindowSizeCallback(GLFWwindow* a_pWindow, int a_iWidth, int a_iHeight)
 {
-	// find the window data corrosponding to a_pWindow;
-	WindowHandle window = nullptr;
-	for (auto& itr : g_lWindows)
-	{
-		if (itr->m_pWindow == a_pWindow)
-		{
-			window = itr;
-			window->m_uiWidth = a_iWidth;
-			window->m_uiHeight = a_iHeight;
-			window->m_m4Projection = glm::perspective(45.0f, float(a_iWidth)/float(a_iHeight), 0.1f, 1000.0f);
-		}
-	}
-
-	std::thread::id thread = std::this_thread::get_id();
-	WindowHandle previousContext = g_mCurrentContextMap[thread];
-	MakeContextCurrent(window);
-	glViewport(0, 0, a_iWidth, a_iHeight);
-	MakeContextCurrent(previousContext);
+    return;
 }
