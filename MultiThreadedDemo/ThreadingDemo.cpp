@@ -359,10 +359,8 @@ int se(WindowHandle a_toWindow)
 int MainLoopBAD()
 {
 	std::cout << "Entering main loop on thread ID: " << std::this_thread::get_id() << std::endl;
-
+    glfwSwapInterval(1);
 	MakeContextCurrent(g_hPrimaryWindow);
-
-    std::thread renderWindow2(&se, g_hSecondaryWindow);
 
 	while (!ShouldClose())
 	{
@@ -371,10 +369,17 @@ int MainLoopBAD()
 		float fDeltaTime = (float)glfwGetTime();
 
 		glm::mat4 identity;
+g_RenderLock.lock();
 		g_ModelMatrix = glm::rotate(identity, fDeltaTime * 10.0f, glm::vec3(0.0f, 1.0f, 0.0f));
+g_RenderLock.unlock();
 
+        std::thread renderWindow2(&Render, g_hSecondaryWindow, false);
+        // Render(g_hSecondaryWindow, false);
 		// render threaded.
+
+        renderWindow2.join();
 		Render(g_hPrimaryWindow);
+
 
 		// calc FPS:
 		CalcFPS(g_hPrimaryWindow);
@@ -384,8 +389,6 @@ g_RenderLock.lock();
 		glfwPollEvents(); // process events!
 g_RenderLock.unlock();
 	}
-
-    renderWindow2.join();
 
 	std::cout << "Exiting main loop on thread ID: " << std::this_thread::get_id() << std::endl;
 
@@ -474,7 +477,6 @@ void Render(WindowHandle a_toWindow, bool isMain)
 {
 g_RenderLock.lock();
 	MakeContextCurrent(a_toWindow);
-g_RenderLock.unlock();
 		
 	// clear the backbuffer to our clear colour and clear the depth buffer
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -490,9 +492,9 @@ g_RenderLock.unlock();
     glViewport(0, 0, width, height);
     if (isMain)
     {
-	glUniformMatrix4fv(ProjectionID, 1, false, glm::value_ptr(a_toWindow->m_m4Projection));
-	glUniformMatrix4fv(ViewID, 1, false, glm::value_ptr(a_toWindow->m_m4ViewMatrix));
-	glUniformMatrix4fv(ModelID, 1, false, glm::value_ptr(g_ModelMatrix));
+        glUniformMatrix4fv(ProjectionID, 1, false, glm::value_ptr(a_toWindow->m_m4Projection));
+        glUniformMatrix4fv(ViewID, 1, false, glm::value_ptr(a_toWindow->m_m4ViewMatrix));
+        glUniformMatrix4fv(ModelID, 1, false, glm::value_ptr(g_ModelMatrix));
     }
 
 	glActiveTexture(GL_TEXTURE0);
@@ -500,8 +502,12 @@ g_RenderLock.unlock();
 	glBindVertexArray(g_mVAOs[a_toWindow->m_uiID]);
 	glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
-	glfwSwapBuffers(a_toWindow->m_pWindow);  // make this loop through all current windows??
+    glFlush();
+    glFinish();
 
+	glfwSwapBuffers(a_toWindow->m_pWindow);  // make this loop through all current windows??
+    glfwMakeContextCurrent(nullptr);
+g_RenderLock.unlock();
 	//CheckForGLErrors("Render Error");
 }
 
@@ -542,7 +548,6 @@ void MakeContextCurrent(WindowHandle a_hWindowHandle)
 	{
 		std::thread::id thread = std::this_thread::get_id();
 
-		glfwMakeContextCurrent(nullptr);
 		glfwMakeContextCurrent(a_hWindowHandle->m_pWindow);
 		g_mCurrentContextMap[thread] = a_hWindowHandle;
 	}
